@@ -1,0 +1,56 @@
+QFrame#toolButton_frame {
+    background-color: #f5f5f5;      /* 浅灰色背景 */
+    border: 1px solid #dcdcdc;      /* 灰色边框 */
+    border-radius: 2px;
+}
+
+QToolButton {
+    border: none;                   /* 平时无边框 */
+    padding: 2px;
+}
+
+QToolButton:hover {
+    background-color: #e0e0e0;      /* 悬停时稍微变深 */
+    border: 1px solid #999999;
+}
+
+QToolButton:pressed {
+    background-color: #d0d0d0;
+}
+
+QPushButton {
+    background-color: #3a3f44;
+    color: #eaeaea;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 12px;
+
+}
+
+QPushButton:hover{
+    background-color: #50575e;
+}
+
+QPushButton:pressed{
+    background-color: #2a2f33;
+}
+
+QPushButton:disabled{
+    background-color: #2a2a2a;
+    color: #777
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

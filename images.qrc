@@ -1,0 +1,16 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file>images/rotate.png</file>
+        <file>images/ic_clear_roi_all.png</file>
+        <file>images/ic_clear_roi_sel.png</file>
+        <file>images/ic_gen_arbitrary_reg.png</file>
+        <file>images/ic_gen_circle.png</file>
+        <file>images/ic_gen_ellipse.png</file>
+        <file>images/ic_gen_rect1.png</file>
+        <file>images/ic_gen_rect2.png</file>
+        <file>images/ic_roi_op_difference.png</file>
+        <file>images/ic_roi_op_intersection.png</file>
+        <file>images/ic_roi_op_union.png</file>
+        <file>images/ic_roi_op_xor.png</file>
+    </qresource>
+</RCC>
