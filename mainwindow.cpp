@@ -1245,8 +1245,19 @@ void MainWindow::AffineCutting(HImage& srcImg, const QString& filePath,const Mat
             return;
         }
 
-        QByteArray path = QFile::encodeName(filePath);
+        static int a = 0;
+        QString now = QDateTime::currentDateTime().toString("yyyyMMdd_HH-mm-ss-zzz_");
+
+        QFileInfo info(filePath);
+        QString outFile = info.path() + "/" + now + QString::number(++a) + "_" + info.fileName();
+
+        QByteArray path = QFile::encodeName(outFile);
         rectfiedImg.WriteImage("jpg",0,path.constData());
+
+        if(!QFile::exists(outFile))
+            qDebug() << outFile << ":写入失败";
+        else
+            qDebug() << outFile << ":写入成功";
     }
     catch(HalconCpp::HException &except){
         // 这是最关键的：它会告诉你哪个算子报错，错误代码是多少
