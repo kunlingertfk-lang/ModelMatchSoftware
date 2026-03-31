@@ -2,6 +2,10 @@
 #include <QtMath>
 #include <QCursor>
 
+#include <QStyleOptionGraphicsItem>
+#include <QGraphicsScene>
+#include <QGraphicsView>
+
 /**
  * @brief 构造函数
  */
@@ -114,7 +118,7 @@ void AbstractRoiItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e)
 
 /**
  * @brief 鼠标释放
- */
+*/
 void AbstractRoiItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* e)
 {
     // 如果刚才处于移动模式，说明拖动完成了
@@ -127,6 +131,16 @@ void AbstractRoiItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* e)
     QGraphicsItem::mouseReleaseEvent(e);
 }
 
+//获取当前视图的缩放比例 (Level of Detail),用于在 boundingRect() 和 hitTest() 中调整手柄感应区域
+qreal AbstractRoiItem::getLod() const{
+     // 检查场景和视图是否存在
+    if(scene() && !scene()->views().isEmpty()){
+        // 获取第一个视图的变换矩阵
+        return QStyleOptionGraphicsItem::levelOfDetailFromTransform(
+            scene()->views().first()->viewportTransform());
+    }
+    return 1.0; // 默认返回原始比例
+}
 
 
 QColor AbstractRoiItem::getPreferredColor() const{

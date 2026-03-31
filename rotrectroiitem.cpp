@@ -64,7 +64,8 @@ void RotRectRoiItem::paint(QPainter* p,
     qreal lod = option->levelOfDetailFromTransform(p->worldTransform());
 
     // 使用基类提供的统一颜色和线型处理线条
-    QPen mainPen(getPreferredColor(), 2, getPreferredPenStyle());
+    qreal width = isSelected() ? 2.0:1.5;
+    QPen mainPen(getPreferredColor(), width, getPreferredPenStyle());
     mainPen.setCosmetic(true); // 关键：线条宽度不随缩放改变
 
     p->setPen(mainPen);
@@ -207,6 +208,9 @@ qreal RotRectRoiItem:: getCurrentLod() const{
     }
     return 1.0;
 }
+
+
+
 
 
 //移动手柄矩形

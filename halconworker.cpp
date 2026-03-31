@@ -2,7 +2,6 @@
 
 #include <QtMath>
 #include <QDebug>
-#include <string>
 
 using namespace HalconCpp;
 
@@ -17,7 +16,21 @@ HalconWorker::~HalconWorker(){
     clearCurrentModel();
 }
 
+void HalconWorker::saveModel(const QString& filePath){
+    if(m_hvModelID.Length() == 0){
+        emit threadLogInfo("保存失败：当前没有已训练好的模板");
+        return;
+    }
 
+    try{
+        // Halcon 算子：将模型写入磁盘 (.shm 文件)
+        HalconCpp::WriteShapeModel(m_hvModelID,filePath.toLocal8Bit().constData());
+        emit threadLogInfo("模板文件导出成功: " + filePath);
+    }
+    catch(HalconCpp::HException &e){
+        emit threadLogInfo("模板导出异常："+QString::fromLocal8Bit(e.ErrorMessage().Text()));
+    }
+}
 
 /*
 void HalconWorker::process(const QString& imgPath, const HalconCpp::HObject& hRegion, const MatchParams& p) {
@@ -206,24 +219,45 @@ void HalconWorker::trainModel(const QString& imgPath, const HalconCpp::HObject& 
 
         // 2. 环境清理与图像加载
         clearCurrentModel();
-        HImage img(imgPath.toLocal8Bit().data());
+
+        HImage srcImg(imgPath.toLocal8Bit().data());//获取图片
+        HImage grayImg;
+        HTuple channels = srcImg.CountChannels();
+        if(channels == 3){
+            grayImg = srcImg.Rgb1ToGray();
+        }
+        else{
+            grayImg = srcImg;
+        }
+
+        //HImage imgGauss = srcimg.GaussFilter(3);
+        HImage imgMedian = grayImg.MedianImage("circle", 3, "mirrored");//中值滤波，去除高频噪点
+        HImage imgEmphasize = imgMedian.Emphasize(7, 7, 1.5);  //增强对比度
+        HImage img(imgEmphasize);
+
+
+        //进行图片处理
         HImage reduced = img.ReduceDomain(hRegion);
 
         // 3. 对比度准备
         HTuple contrast;
         contrast[0] = p.contrastLow;
         contrast[1] = p.contrastHigh;
+        contrast[2] = p.minComponentSize;
+
+        // 2. 准备最小对比度（通常是一个固定小值）
+        HTuple hv_MinContrast = 5; // 或者从 UI 传一个值，通常不建议设太大
 
         // 4. 创建模型 (各项异性)
         HTuple angleStart = qDegreesToRadians(p.angleStart);
         HTuple angleExtent = qDegreesToRadians(p.angleExtent);
-
-        // [优化]：此处使用参数中的 pyramidLevel
+        qDebug() << p.minComponentSize;
+        // [优化]：此处使用参数中的 pyramidLevel   创建各向异性的Model算子
         CreateAnisoShapeModel(reduced, p.pyramidLevel, // 对应 MatchParams.numLevels
                               angleStart, angleExtent, "auto",
                               p.scaleRMin, p.scaleRMax, "auto",
                               p.scaleCMin, p.scaleCMax, "auto",
-                              "auto", "use_polarity", contrast, p.minComponentSize, &m_hvModelID);
+                              "auto", "use_polarity", contrast, hv_MinContrast, &m_hvModelID);
 
         if (m_hvModelID.Length() > 0) {
             // 获取原始轮廓用于预览 (始终以 0,0 为中心)
@@ -247,8 +281,13 @@ void HalconWorker::trainModel(const QString& imgPath, const HalconCpp::HObject& 
 
                 // 6. 执行轮廓仿射变换
                 HTuple hv_HomMat2D;
-                VectorAngleToRigid(0, 0, 0, r[0], c[0], angle[0], &hv_HomMat2D);
-                AffineTransContourXld(ho_ModelContours, &res.modelContours, hv_HomMat2D);
+                // VectorAngleToRigid(0, 0, 0, r[0], c[0], angle[0], &hv_HomMat2D);
+                HalconCpp::HomMat2dIdentity(&hv_HomMat2D);
+                HalconCpp::HomMat2dScale(hv_HomMat2D,SR,SC,0,0,&hv_HomMat2D);
+                HalconCpp::HomMat2dRotate(hv_HomMat2D,res.angle,0,0,&hv_HomMat2D);
+                HalconCpp::HomMat2dTranslate(hv_HomMat2D,res.row,res.col,&hv_HomMat2D);
+
+                HalconCpp::AffineTransContourXld(ho_ModelContours, &res.modelContours, hv_HomMat2D);
 
                 emit threadLogInfo("训练并自检成功");
             } else {
@@ -286,10 +325,10 @@ void HalconWorker::matchBatch(const QStringList& imgPaths, const MatchParams& p)
         HalconCpp::GetShapeModelContours(&baseContours, m_hvModelID, 1);
 
         for (int i = 0; i < imgPaths.size(); ++i) {
-            MatchResult res;
+            QVector<MatchResult> res;
             try {
-                HalconCpp::HTuple start;
-                HalconCpp::CountSeconds(&start);
+                // HalconCpp::HTuple start; //算法开始起始时间
+                // HalconCpp::CountSeconds(&start);
 
                 HalconCpp::HImage img(imgPaths[i].toLocal8Bit().data());
                 HalconCpp::HTuple r, c, a, sr, sc, score;
@@ -297,40 +336,45 @@ void HalconWorker::matchBatch(const QStringList& imgPaths, const MatchParams& p)
                 HalconCpp::FindAnisoShapeModel(img, m_hvModelID,
                                                qDegreesToRadians(p.angleStart), qDegreesToRadians(p.angleExtent),
                                                p.scaleCMin, p.scaleCMax, p.scaleRMin, p.scaleRMax,
-                                               p.minScore, 1, 0.5, "least_squares", 0, 0.9,
+                                               p.minScore, p.matchNum, 0.5, "least_squares", 0, 0.9,
                                                &r, &c, &a, &sr, &sc, &score);
 
-                if (score.Length() > 0) {
-                    res.found = true;
-                    res.row = r[0].D(); res.col = c[0].D(); res.angle = a[0].D();
-                    res.score = score[0].D();
-                    double scaleR = sr[0].D(), scaleC = sc[0].D();
+                int numFound = score.Length();
+                if (numFound > 0) {
+                    for(int j = 0;j < numFound; ++j){
+                        MatchResult onrRes;
+                        onrRes.found = true;
+                        onrRes.row = r[j].D(); onrRes.col = c[j].D(); onrRes.angle = a[j].D();
+                        onrRes.score = score[j].D();
+                        double scaleR = sr[j].D(), scaleC = sc[j].D();
 
 
-                    HalconCpp::HTuple homMat;
-                    HalconCpp::HomMat2dIdentity(&homMat); // 建立基础矩阵
+                        HalconCpp::HTuple homMat;
+                        HalconCpp::HomMat2dIdentity(&homMat); // 建立基础矩阵
 
-                    /*刚体变换矩阵根据起始点(R1,C1,θ1)(R1,C1,θ1) 和 目标点 (R2,C2,θ2)(R2,C2,θ2)自动计算出一个包含平移和旋转的矩阵。它不支持缩放（Scaling）。*/
-                    // 适用场景：普通的形状匹配（只有位置和角度变化，物体大小绝对不变）。
-                    // HalconCpp::VectorAngleToRigid(0, 0, 0, r[0], c[0], a[0], &homMat);
+                        /*刚体变换矩阵根据起始点(R1,C1,θ1)(R1,C1,θ1) 和 目标点 (R2,C2,θ2)(R2,C2,θ2)自动计算出一个包含平移和旋转的矩阵。它不支持缩放（Scaling）。*/
+                        // 适用场景：普通的形状匹配（只有位置和角度变化，物体大小绝对不变）。
+                        // HalconCpp::VectorAngleToRigid(0, 0, 0, r[0], c[0], a[0], &homMat);
 
-                     // 2. 先缩放轮廓（针对中心 0,0）
-                    HalconCpp::HomMat2dScale(homMat,scaleR,scaleC,0,0,&homMat);
-                    // 3. 再旋转
-                    HomMat2dRotate(homMat, res.angle, 0, 0, &homMat);
+                        // 2. 先缩放轮廓（针对中心 0,0）
+                        HalconCpp::HomMat2dScale(homMat,scaleR,scaleC,0,0,&homMat);
+                        // 3. 再旋转
+                        HomMat2dRotate(homMat, onrRes.angle, 0, 0, &homMat);
 
-                    // 4. 最后平移到目标像素位置
-                    HomMat2dTranslate(homMat, res.row, res.col, &homMat);
+                        // 4. 最后平移到目标像素位置
+                        HomMat2dTranslate(homMat, onrRes.row, onrRes.col, &homMat);
 
-                    HalconCpp::AffineTransContourXld(baseContours, &res.modelContours, homMat);
+                        HalconCpp::AffineTransContourXld(baseContours, &onrRes.modelContours, homMat);
+                        res.push_back(onrRes);
+                    }
                 }
-                HalconCpp::HTuple end;
-                HalconCpp::CountSeconds(&end);
-                res.time = (end.D() - start.D()) * 1000.0;
+                // HalconCpp::HTuple end;
+                // HalconCpp::CountSeconds(&end);
+                // res.time = (end.D() - start.D()) * 1000.0;
 
             } catch (HalconCpp::HException &e) {
-                res.found = false;
-                res.errorMsg = QString("图像 %1 读取或匹配异常").arg(i);
+                res[0].found = false;
+                res[0].errorMsg = QString("图像 %1 读取或匹配异常").arg(i);
             }
             emit batchRowReady(i, res); // 发回单行结果
         }

@@ -81,6 +81,9 @@ public:
 
     HandleType activeHandle() const;
 
+
+
+
 protected:
     // ===== Qt统一的事件分发 =====
     void mousePressEvent(QGraphicsSceneMouseEvent* e) override;
@@ -96,7 +99,7 @@ protected:
     QColor getPreferredColor() const;
     Qt::PenStyle getPreferredPenStyle() const;
 
-
+    qreal getLod() const;//获取当前视图的缩放比例 (Level of Detail),用于在 boundingRect() 和 hitTest() 中调整手柄感应区域
 
 protected:
     RoiType      m_roiType  = RoiType::None;

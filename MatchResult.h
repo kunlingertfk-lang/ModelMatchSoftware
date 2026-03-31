@@ -15,21 +15,21 @@ struct MatchResult{
 
 struct MatchParams{
     //建模参数
-    int contrastLow = 30;
-    int contrastHigh = 60;
-    int minComponentSize = 10;
-    int pyramidLevel = 0;//0 为 auto
+    int contrastLow = 35;
+    int contrastHigh = 70;
+    int minComponentSize = 15;
+    int pyramidLevel = 6;//0 为 auto
 
     double angleStart = 0.0;
     double angleExtent = 360.0;
 
     //缩放参数
-    double scaleRMin = 1.0, scaleRMax = 1.0;
-    double scaleCMin = 1.0, scaleCMax = 1.0;
+    double scaleRMin = 0.85, scaleRMax = 1.15;
+    double scaleCMin = 0.85, scaleCMax = 1.15;
 
     //查找参数
     double minScore = 0.5;
-    int matchNum = 0; //暂无意义
+    int matchNum = 1; //一个图片中能匹配的最大的模板个数
     int itemIndex = -1;
 };
 

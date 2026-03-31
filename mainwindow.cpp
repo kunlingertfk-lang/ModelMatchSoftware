@@ -17,6 +17,14 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QSlider>
+#include <QList>
+#include <QVariant>
+#include <QCryptographicHash>
+#include <QSettings>
+#include <QInputDialog>
+#include <QDateTime>
+
+#include <vector>
 
 #include "AbstractRoiItem.h"
 #include "roitoolbar.h"
@@ -34,7 +42,11 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
+    m_configIni = "config.ini";
+    m_curExePath = QDir::currentPath();
+
     loadStyleSheet();
+    qRegisterMetaType<QVector<MatchResult>>("QVector<MatchResult>");
 
     ui->splitter->setStretchFactor(0,7);
     ui->splitter->setStretchFactor(1,3);
@@ -69,10 +81,19 @@ MainWindow::MainWindow(QWidget *parent)
     initUICtrl();//初始化UI控件
     initRoiSystem();   // 工具栏
     initConnections(); // 信号槽
+
+    initPasswordCofigure();//初始化ini配置
+    loadParamersFromIni();
+
+    //ui->tabWidget->removeTab(3);
+    //ui->tabWidget->removeTab(4);
+
 }
 
 MainWindow::~MainWindow()
 {
+    GetCurrentParams();
+    saveParamersToIni();
     if(m_workerThread->isRunning()){
         m_workerThread->quit();
         m_workerThread->wait();
@@ -106,7 +127,6 @@ void MainWindow::initRoiSystem(){
     });
 
     // 清空所有 ROI
-
     connect(m_roiToolbar, &RoiToolbar::clearAllRequested, this, [this](){
         for (auto item : m_scene->items()) {
             auto roi = dynamic_cast<AbstractRoiItem*>(item);
@@ -116,6 +136,20 @@ void MainWindow::initRoiSystem(){
             }
         }
         m_resultItem->setVisible(false);
+    });
+
+    // 切换页隐藏ROI
+    connect(ui->tabWidget,&QTabWidget::currentChanged,this,[this](int index){
+        qDebug() << "点击第几页：" << index;
+        if(index == 2)
+            setRoisVisible(false);
+        else if(index == 0){
+            //if()
+            m_resultItem->clearContour();
+            loadImage(m_ImgPath);
+            setRoisVisible(true);// 回到参数页，重新显示 ROI 供用户调节
+            m_resultItem->setResult(m_currentResult,false);
+        }
     });
 }
 
@@ -149,24 +183,19 @@ void MainWindow::initAlgorithmThread(){
         if(res.found && res.score>0.1){ // 增加一个基础分值过滤
             // 更新绿色十字架结果
             //qDebug() << "匹配成功" ;
-            m_resultItem->setResult(res);
+            m_resultItem->setResult(res,false);
             m_resultItem->setLabel(QString("%1 ms").arg(res.time, 0, 'f', 1));
+            m_currentResult = res;
         }else {
             m_resultItem->setVisible(false);
             qDebug() << "匹配失败：特征不足或得分太低";
         }
     });
 
-    // 连接：子线程结果 -> 主线程更新 单张图片匹配结果
-    connect(m_worker,&HalconWorker::batchRowReady,this,[this](int index,MatchResult res){
-        m_batchList[index].result = res;
-        m_batchList[index].isTested = true;
 
-        // 更新表格对应行
-        ui->tableWidget->item(index, 1)->setText(res.found ? QString::number(res.score,'f',2) : "NG");
-        ui->tableWidget->item(index, 1)->setBackground(res.found ? Qt::green : Qt::red);
-        // handleBatchResult(ui->tableWidget->item(index,1));
-    });
+
+    // 连接：子线程结果 -> 主线程更新 单张图片匹配结果
+    connect(m_worker,&HalconWorker::batchRowReady,this,&MainWindow::batchMatchResult);
 
 
      // 连接：子线程结果 -> 主线程更新 所有图片匹配完成,让按钮可按
@@ -182,12 +211,99 @@ void MainWindow::initAlgorithmThread(){
     m_workerThread->start();
 }
 
+void MainWindow::handleContrastChange(QWidget* source, int val, bool isLow){
+    const QList<QWidget*> widgets = {
+        ui->spinContrastLow,    ui->sliderContrastLow,
+        ui->spinContrastHigh,   ui->sliderContrastHigh
+    };
+
+    for(auto w : widgets) w->blockSignals(true);
+
+    if(isLow) m_currentParams.contrastLow = val;
+    else m_currentParams.contrastHigh = val;
+
+    if(m_currentParams.contrastLow > m_currentParams.contrastHigh){
+        if(isLow) {
+            m_currentParams.contrastHigh = m_currentParams.contrastLow;
+        }
+        else{
+            m_currentParams.contrastLow = m_currentParams.contrastHigh;
+        }
+    }
+
+    ui->spinContrastLow->setValue(m_currentParams.contrastLow);
+    ui->sliderContrastLow->setValue(m_currentParams.contrastLow);
+    ui->spinContrastHigh->setValue(m_currentParams.contrastHigh);
+    ui->sliderContrastHigh->setValue(m_currentParams.contrastHigh);
+
+    for(auto w : widgets) w->blockSignals(false);
+}
+
+void MainWindow::handleScalingChange(ControlEdge edge, double val, bool isRow) {
+    // 1. 屏蔽信号
+    const QList<QWidget*> widgets = {
+        ui->doubleSpinBox_RowMinScale, ui->doubleSpinBox_RowMaxScale,
+        ui->doubleSpinBox_ColMinScale, ui->doubleSpinBox_ColMaxScale,
+        ui->sliderMinScalingRow, ui->sliderMaxScalingRow,
+        ui->sliderMinScalingColumn, ui->sliderMaxScalingColumn
+    };
+    for(auto w : widgets) w->blockSignals(true);
+
+    bool isMin = (edge == MinEdge);
+
+    // 2. 第一阶段：赋值当前操作维度的变量
+    if (isRow) {
+        if (isMin) m_currentParams.scaleRMin = val;
+        else m_currentParams.scaleRMax = val;
+    } else {
+        if (isMin) m_currentParams.scaleCMin = val;
+        else m_currentParams.scaleCMax = val;
+    }
+
+    // 3. 第二阶段：处理【Min <= Max】逻辑 (推力逻辑)
+    // 必须在行列同步之前处理，保证数据的合法性基准
+    if (isRow) {
+        if (m_currentParams.scaleRMin > m_currentParams.scaleRMax) {
+            if (isMin) m_currentParams.scaleRMax = m_currentParams.scaleRMin;
+            else m_currentParams.scaleRMin = m_currentParams.scaleRMax;
+        }
+    } else {
+        if (m_currentParams.scaleCMin > m_currentParams.scaleCMax) {
+            if (isMin) m_currentParams.scaleCMax = m_currentParams.scaleCMin;
+            else m_currentParams.scaleCMin = m_currentParams.scaleCMax;
+        }
+    }
+
+    // 4. 第三阶段：处理【行列同步】
+    if (ui->checkLockScale->isChecked()) {
+        if (isRow) {
+            m_currentParams.scaleCMin = m_currentParams.scaleRMin;
+            m_currentParams.scaleCMax = m_currentParams.scaleRMax;
+        } else {
+            m_currentParams.scaleRMin = m_currentParams.scaleCMin;
+            m_currentParams.scaleRMax = m_currentParams.scaleCMax;
+        }
+    }
+
+    // 5. 第四阶段：刷新 UI
+    auto refresh = [](QDoubleSpinBox* sb, QSlider* sd, double v) {
+        if (sb->value() != v) sb->setValue(v);
+        int sVal = qRound(v * 100.0);
+        if (sd->value() != sVal) sd->setValue(sVal);
+    };
+
+    refresh(ui->doubleSpinBox_RowMinScale, ui->sliderMinScalingRow, m_currentParams.scaleRMin);
+    refresh(ui->doubleSpinBox_RowMaxScale, ui->sliderMaxScalingRow, m_currentParams.scaleRMax);
+    refresh(ui->doubleSpinBox_ColMinScale, ui->sliderMinScalingColumn, m_currentParams.scaleCMin);
+    refresh(ui->doubleSpinBox_ColMaxScale, ui->sliderMaxScalingColumn, m_currentParams.scaleCMax);
+
+    for(auto w : widgets) w->blockSignals(false);
+}
+
 //绑定QSlider与QSPinBox ,并进行value联动
 void MainWindow::initParamConnections(){
     //初始化参数
     m_intBindings = QVector<IntBinding>{
-        IntBinding(ui->sliderContrastLow,       ui->spinContrastLow,      &m_currentParams.contrastLow),
-        IntBinding(ui->sliderContrastHigh,      ui->spinContrastHigh,     &m_currentParams.contrastHigh),
         IntBinding(ui->sliderComponentSizeMin,  ui->spinComponentSizeMin, &m_currentParams.minComponentSize),
         IntBinding(ui->sliderPyramidLevel,      ui->spinPyramidLevel,     &m_currentParams.pyramidLevel),
         IntBinding(ui->sliderMaxMatchNum,       ui->spinBoxMaxMatchNum,   &m_currentParams.matchNum)
@@ -196,10 +312,6 @@ void MainWindow::initParamConnections(){
     m_doubleBindings = QVector<DoubleBinding>{
         DoubleBinding(ui->sliderAngleStart,        ui->doubleSpinBox_AngleStart,   &m_currentParams.angleStart,   1.0),
         DoubleBinding(ui->sliderAngleExtent,       ui->doubleSpinBox_AngleExtent,  &m_currentParams.angleExtent,  1.0),
-        DoubleBinding(ui->sliderMinScalingRow,     ui->doubleSpinBox_RowMinScale,  &m_currentParams.scaleRMin,    100.0),
-        DoubleBinding(ui->sliderMaxScalingRow,     ui->doubleSpinBox_RowMaxScale,  &m_currentParams.scaleRMax,    100.0),
-        DoubleBinding(ui->sliderMinScalingColumn,  ui->doubleSpinBox_ColMinScale,  &m_currentParams.scaleCMin,    100.0),
-        DoubleBinding(ui->sliderMaxScalingColumn,  ui->doubleSpinBox_ColMaxScale,  &m_currentParams.scaleCMax,    100.0),
         DoubleBinding(ui->sliderMinMatchScore,     ui->doubleSpinBoxMinMatchScore, &m_currentParams.minScore,     100.0)
     };
 
@@ -211,56 +323,75 @@ void MainWindow::initParamConnections(){
 
     // 绑定每对 spinbox和slider
     for(auto& b : m_intBindings){
-        auto applyValue = [this,b](int val,bool fromUI){
-            int sliderVal = val;
-            if(b.slider->value() != sliderVal)
-                b.slider->setValue(sliderVal);
+        auto applyValue = [this, b](int val){
+            if(*b.target == val) return;
+            *b.target = val;
 
-            if(b.spinbox->value() != val)
-                b.spinbox->setValue(val);
-            if(fromUI){
-                *b.target = val;
-                m_paramTimer->start(100);
-            }
+            QSignalBlocker blocker1(b.slider);
+            QSignalBlocker blocker2(b.spinbox);
 
+            b.slider->setValue(val);
+            b.spinbox->setValue(val);
+            m_paramTimer->start(100);
         };
 
-        // 主要显示
-        connect(b.spinbox,QOverload<int>::of(&QSpinBox::valueChanged),this, [=](int val){
-            applyValue(val,true);
-        });
-        connect(b.slider,&QSlider::valueChanged, this,[=](int val){
-            if(*b.target == val) return;
-            applyValue(val,false);
-        });
+        connect(b.spinbox, QOverload<int>::of(&QSpinBox::valueChanged), this, applyValue);
+        connect(b.slider, &QSlider::valueChanged, this, applyValue);
     }
 
     // 绑定每对 doublespinbox和slider
+
     for(auto& b : m_doubleBindings){
-        auto applyValue = [this,b](double val,bool fromUI){
-            int sliderVal = qRound(val*b.scale);
+        auto applyValue = [this,b](double val){
+            if(qAbs(*b.target-val) < (0.1/b.scale)) return;
 
-            if(b.slider->value() != sliderVal)
-                b.slider->setValue(sliderVal);
+            *b.target = val;
 
-            // 浮点安全比较
-            if(!qFuzzyCompare(b.spinbox->value()+1.0,val+1.0))
-                b.spinbox->setValue(val);
-            if(fromUI){
-                *b.target = val;
-                m_paramTimer->start(100);
-            }
+            QSignalBlocker blocker1(b.slider);
+            QSignalBlocker blocker2(b.spinbox);
+
+            b.slider->setValue(qRound(val*b.scale));
+            b.spinbox->setValue(val);
+
+            m_paramTimer->start(100);
         };
-        connect(b.spinbox,QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [=](double val){
-            applyValue(val,true);
-        });
+        connect(b.spinbox,QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, applyValue);
         connect(b.slider,&QSlider::valueChanged, this,[=](int val){
             double dv = val / b.scale;
-            // 防止重复回调
-            if(qFuzzyCompare(b.spinbox->value() + 1.0, dv + 1.0)) return;
-            applyValue(dv,false);
+            applyValue(dv);
         });
     }
+
+    auto bindIntScaling = [this](QSpinBox* sb,QSlider* sd, bool isContrastLow){
+        auto func = [this,isContrastLow](int val){
+            this->handleContrastChange(nullptr,val,isContrastLow);// handle内部应处理UI同步
+            m_paramTimer->start(100);
+        };
+
+        connect(sb,QOverload<int>::of(&QSpinBox::valueChanged),func);
+        connect(sd,&QSlider::valueChanged,func);
+    };
+
+    bindIntScaling( ui->spinContrastLow,ui->sliderContrastLow,true);
+    bindIntScaling( ui->spinContrastHigh,ui->sliderContrastHigh,false);
+
+    auto bindScaling = [this](QDoubleSpinBox* sb, QSlider* sd, ControlEdge type, bool isRow){
+        // 注意：这里去掉了硬编码 100.0，建议在 handleScalingChange 内部统一比例
+        auto func = [this, type, isRow, sb, sd](double v){
+            this->handleScalingChange(type, v, isRow);
+            m_paramTimer->start(100);
+        };
+
+        connect(sb, QOverload<double>::of(&QDoubleSpinBox::valueChanged), func);
+        connect(sd, &QSlider::valueChanged, [=](int v){
+            func((double)v / 100.0); // 假设缩放比例统一为 100
+        });
+    };
+
+    bindScaling(ui->doubleSpinBox_RowMinScale,ui->sliderMinScalingRow,ControlEdge::MinEdge,true);
+    bindScaling(ui->doubleSpinBox_RowMaxScale,ui->sliderMaxScalingRow,ControlEdge::MaxEdge,true);
+    bindScaling(ui->doubleSpinBox_ColMinScale,ui->sliderMinScalingColumn,ControlEdge::MinEdge,false);
+    bindScaling(ui->doubleSpinBox_ColMaxScale,ui->sliderMaxScalingColumn,ControlEdge::MaxEdge,false);
 }
 
 
@@ -272,7 +403,10 @@ void MainWindow::initConnections(){
     });
 
     // 只有右键确认 ROI 后才触发算法（防止频繁创建模型导致卡顿）
-    connect(m_view,&RoiGraphicsView::itemFinished,this,&MainWindow::triggerUpdate);
+    connect(m_view,&RoiGraphicsView::itemFinished,this,[=](){
+        triggerUpdate();
+        updateUIparams();
+    });
 
     // 处理 ROI 结束后的工具栏状态
     connect(m_view, &RoiGraphicsView::itemFinished, m_roiToolbar, &RoiToolbar::resetShapeButtons);
@@ -287,41 +421,39 @@ void MainWindow::initConnections(){
     connect(ui->ContrastLHAuto_Button,&QPushButton::clicked,this,&MainWindow::contrastLHAutoSelect);
 
     // 点击表格单元格显示图片和匹配结果
-    setupConnect();
+    connect(ui->tableWidget,&QTableWidget::cellClicked,this,&MainWindow::onTableCellClicked);
 
     // 检测所有图片
     connect(ui->pushButton_DetectionAll,&QPushButton::clicked,this,&MainWindow::onButtonClicked_DetectAllImages);
 
     // 打印workerThread的信息
     connect(m_worker,&HalconWorker::threadLogInfo,this,&MainWindow::printThreadLogInfo);
+
+    //保存Model文件
+    connect(ui->pushButton_OutModelFile,&QPushButton::clicked,this,&MainWindow::on_pushbutton_OutModelFile);
+
+    connect(this, &MainWindow::requestSaveModel,m_worker,&HalconWorker::saveModel);
 }
 
 // connect table和clicked
-void MainWindow::setupConnect(){
-    static bool connected = false;
-    if (connected) return;
-    connected = true;
+void MainWindow::onTableCellClicked(int row,int col){
 
-    connect(ui->tableWidget, &QTableWidget::cellClicked,
-            this,
-            [this](int row, int col) {
+    if(m_batchList.empty()) return; //不能在这判断，不然一开没有链接
+    //qDebug() << "点击" << row << "行单元格";
+    if (row < 0 || row >= m_batchList.size())
+        return;
 
-                if (row < 0 || row >= m_batchList.size())
-                    return;
-
-                BatchData &data = m_batchList[row];
-
-                // 1. 加载图片
-                loadImage(data.filePath);
-
-                // 2. 恢复显示该图的匹配结果
-                if (data.isTested) {
-                    m_resultItem->setResult(data.result);   // 用该行自己的结果
-                    m_resultItem->setVisible(true);
-                } else {
-                    m_resultItem->setVisible(false);
-                }
-            });
+    BatchData &data = m_batchList[row];
+    // 1. 加载图片
+    loadImage(data.filePath);
+    // 2. 恢复显示该图的匹配结果
+    if (data.isTested) {
+        //m_scene->clear();
+        m_resultItem->setResult(data.result,true);
+        m_resultItem->setVisible(true);
+    } else {
+        m_resultItem->setVisible(false);
+    }
 }
 
 void MainWindow::initUICtrl(){
@@ -329,24 +461,283 @@ void MainWindow::initUICtrl(){
     ui->tableWidget->setHorizontalHeaderLabels({"名称","看的见的","检测到的"});
     ui->tableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->tableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
-
-
 }
 
 
+void MainWindow::updateUserPermissions(UserRole role){
+    //权限对应数值：Operator=0，Engineer=1，Developer=2
+    int currnetUserLevel = static_cast<int>(role);
+
+    auto getLevelNum = [](QString levelStr)->int{
+        if(levelStr == "engineer") return 1;
+        if(levelStr == "developer") return 2;
+        return 0;
+    };
+
+    //找到所有子控件
+    QList<QWidget*> allWidgets = this->findChildren<QWidget*>();
+    for(QWidget* w : allWidgets){
+        QVariant levelProp = w->property("level");
+
+        if(levelProp.isValid()){
+            int widgetRequiredLevel = getLevelNum(levelProp.toString());
+
+            if(currnetUserLevel < widgetRequiredLevel){
+                if(widgetRequiredLevel == static_cast<int>(UserRole::Engineer))
+                    w->setEnabled(false); //A:禁用控件
+                else
+                    w->setVisible(false);//B.彻底隐藏
+            }
+            else{
+                w->setEnabled(true);
+                w->setVisible(true);
+            }
+        }
+    }
+
+    // 特殊处理：比如 TabWidget 的某页只给 Developer 看
+    // ui->tabWidget->setTabVisible(1,currnetUserLevel >=1);// 参数页给工程师以上
+    // ui->tabWidget->setTabVisible(2,currnetUserLevel >=2);// 高级调试给开发人员
+}
+
+
+
+//不同用户切换密码
+//初始化配置
+void MainWindow::initPasswordCofigure(){
+    QSettings settings("config.ini",QSettings::IniFormat);
+    if(!settings.contains("Passwords/Engineer")){
+        settings.setValue("Passwords/Engineer",hashPassword("123"));
+    }
+    if(!settings.contains("Passwords/Developer")){
+        settings.setValue("Passwords/Developer",hashPassword("admin"));
+    }
+
+    connect(ui->comboBox_User,QOverload<int>::of(&QComboBox::activated),this,&MainWindow::on_comboxUserRole_activated);
+    connect(ui->pushButton_ChangedPassword,&QPushButton::clicked,this,&MainWindow::on_pushbutton_changePassword);
+    updateUserPermissions(UserRole::Operator);
+}
+
+QString MainWindow::hashPassword(const QString& plainText){
+    QByteArray data = plainText.toUtf8();
+    QByteArray hash = QCryptographicHash::hash(data,QCryptographicHash::Sha256);
+    return QString(hash.toHex());
+}
+
+void MainWindow::on_comboxUserRole_activated(int index){
+    UserRole selectedRole = static_cast<UserRole>(index);
+
+    // 1. 如果用户选择的是当前已经登录的角色，直接退出
+    if (selectedRole == m_currentRole) return;
+
+    // 2. 如果切回操作员 (Operator)，无需密码直接切换
+    if (selectedRole == UserRole::Operator) {
+        m_currentRole = UserRole::Operator;
+        updateUserPermissions(m_currentRole);
+        QMessageBox::information(this, "提示", "已切回操作员权限");
+        return;
+    }
+
+    // 3. 弹出密码输入框
+    bool ok;
+    QString roleName = (selectedRole == UserRole::Engineer) ? "工程师" : "开发人员";
+
+    // 界面美化：根据角色弹出不同的标题
+    QString password = QInputDialog::getText(this, "权限验证",
+                                             QString("请输入%1密码:").arg(roleName),
+                                             QLineEdit::Password, "", &ok);
+
+    if (ok && !password.isEmpty()) {
+        // 4. 验证密码 (从 INI 文件读取哈希对比)
+        QSettings settings("config.ini", QSettings::IniFormat);
+        QString key = (selectedRole == UserRole::Engineer) ? "Passwords/Engineer" : "Passwords/Developer";
+        QString savedHash = settings.value(key).toString();
+
+        if (hashPassword(password) == savedHash) {
+            // 验证通过
+            m_currentRole = selectedRole;
+            updateUserPermissions(m_currentRole);
+            QMessageBox::information(this, "成功", QString("权限已切换至 %1").arg(roleName));
+        } else {
+            // 验证失败
+            QMessageBox::critical(this, "错误", "密码错误，验证未通过！");
+            // 关键：把 ComboBox 的显示索引重置回原来的角色
+            ui->comboBox_User->setCurrentIndex(static_cast<int>(m_currentRole));
+        }
+    } else {
+        // 用户点了取消或者没输密码
+        ui->comboBox_User->setCurrentIndex(static_cast<int>(m_currentRole));
+    }
+}
+
+void MainWindow::on_pushbutton_changePassword(){
+    if (m_currentRole == UserRole::Operator) {
+        QMessageBox::warning(this, "权限不足", "操作员无权修改密码！");
+        return;
+    }
+
+    QStringList items;
+    items << "工程师" << "开发人员";
+
+    bool ok;
+    QString item = QInputDialog::getItem(this,"更改密码",QString("请选择要修改的角色"),items,0,false,&ok);
+    if(!ok || item.isEmpty()) return;
+
+
+
+    UserRole role = (item == "工程师") ? UserRole::Engineer : UserRole::Developer;
+    QString roleName = (role == UserRole::Engineer) ? "工程师" : "开发人员";
+    QString newPassword1 = QInputDialog::getText(this,"更改密码",
+                                                QString("请输入%1的新密码").arg(roleName),
+                                                QLineEdit::Password,"",&ok);
+
+    QString newPassword2 = QInputDialog::getText(this,"更改密码",
+                                                 QString("请再次输入%1的新密码").arg(roleName),
+                                                 QLineEdit::Password,"",&ok);
+
+
+    if(ok && (!newPassword1.isEmpty() && !newPassword2.isEmpty()) && (newPassword1 == newPassword2)){
+        changePassword(role,newPassword2);
+    }
+    else if(ok && (newPassword1.isEmpty() || newPassword2.isEmpty())){
+        QMessageBox::warning(this,"提示","密码不能为空!");
+    }
+}
+
+void MainWindow::changePassword(UserRole role,const QString& newPassword){
+    if(m_currentRole != UserRole::Developer){
+        QMessageBox::information(this,"权限不足","只有开发人员可以修改密码");
+        return;
+    }
+
+    QSettings setting("config.ini",QSettings::IniFormat);
+    QString roleKey = (role == UserRole::Engineer) ? "Passwords/Engineer" : "Passwords/Developer";
+
+    setting.setValue(roleKey,hashPassword(newPassword));
+    setting.sync();
+    QMessageBox::information(this,"成功","修改密码成功");
+}
+
+void MainWindow::loadParamersFromIni(){
+    QSettings setting(m_configIni,QSettings::IniFormat);
+    setting.beginGroup("MatchParams");
+    m_currentParams.contrastLow = setting.value("ContrastLow",m_currentParams.contrastLow).toInt();
+    m_currentParams.contrastHigh = setting.value("ContrastHigh",m_currentParams.contrastHigh).toInt();
+    m_currentParams.minComponentSize = setting.value("MinComponentSize",m_currentParams.minComponentSize).toInt();
+    m_currentParams.pyramidLevel = setting.value("PyramidLevel",m_currentParams.pyramidLevel).toInt();
+    m_currentParams.matchNum = setting.value("MaxMatchNum",m_currentParams.matchNum).toInt();
+
+    m_currentParams.angleStart = setting.value("AngleStart",m_currentParams.angleStart).toDouble();
+    m_currentParams.angleExtent = setting.value("AngleExtent",m_currentParams.angleExtent).toDouble();
+    m_currentParams.scaleRMin = setting.value("ScaleRMin",m_currentParams.scaleRMin).toDouble();
+    m_currentParams.scaleRMax = setting.value("ScaleRMax",m_currentParams.scaleRMax).toDouble();
+    m_currentParams.scaleCMin = setting.value("ScaleCMin",m_currentParams.scaleCMin).toDouble();
+    m_currentParams.scaleCMax = setting.value("ScaleCMax",m_currentParams.scaleCMax).toDouble();
+    m_currentParams.minScore = setting.value("MinScore",m_currentParams.minScore).toDouble();
+    setting.endGroup();
+
+
+    setting.beginGroup("FilePath");
+    m_ImgPath = setting.value("ImgFile","").toString();
+    if(!m_ImgPath.isEmpty()) {
+        loadImage(m_ImgPath);
+    }
+    m_lastOpenPath = setting.value("LastOpenPath","").toString();
+    m_BatchFloderPath = setting.value("BatchFloderPath","").toString();
+    setting.endGroup();
+
+    setting.beginGroup("CutParamers");
+    m_cutImgWidth = setting.value("CutImgWidth","0.0").toDouble();
+    m_cutImgHeight = setting.value("CutImgHeight","0.0").toDouble();
+    m_pairCount = setting.value("PairCount","0").toInt();
+    setting.endGroup();
+
+    updateUIparams();
+}
+
+void MainWindow::saveParamersToIni(){
+    //创建打开ini文件
+    QSettings setting(m_configIni,QSettings::IniFormat);
+
+    setting.beginGroup("MatchParams");
+    //整形参数
+    setting.setValue("ContrastLow",m_currentParams.contrastLow);
+    setting.setValue("ContrastHigh",m_currentParams.contrastHigh);
+    setting.setValue("MinComponentSize",m_currentParams.minComponentSize);
+    setting.setValue("PyramidLevel",m_currentParams.pyramidLevel);
+    setting.setValue("MaxMatchNum",m_currentParams.matchNum);
+    //浮点型参数
+    setting.setValue("AngleStart",m_currentParams.angleStart);
+    setting.setValue("AngleExtent",m_currentParams.angleExtent);
+    setting.setValue("ScaleRMin",m_currentParams.scaleRMin);
+    setting.setValue("ScaleRMax",m_currentParams.scaleRMax);
+    setting.setValue("ScaleCMin",m_currentParams.scaleCMin);
+    setting.setValue("ScaleCMax",m_currentParams.scaleCMax);
+    setting.setValue("MinScore",m_currentParams.minScore);
+    setting.endGroup();
+
+    setting.beginGroup("FilePath");
+    //setting.setValue("MatchModelFile/ModelFile",ui->Img_lineEdit->text());
+    setting.setValue("ImgFile",m_ImgPath);
+    setting.setValue("LastOpenPath",m_lastOpenPath);
+    setting.setValue("BatchFloderPath",m_BatchFloderPath);
+    setting.endGroup();
+
+    setting.beginGroup("CutParamers");
+    setting.setValue("PairCount",m_pairCount);
+    setting.setValue("CutImgWidth",m_cutImgWidth);
+    setting.setValue("CutImgHeight",m_cutImgHeight);
+    setting.endGroup();
+
+    qDebug() << "参数已保存到ini中";
+}
+
 //======================================================
 // ====================== 业务逻辑 ======================
+
+
+void MainWindow::batchMatchResult(int index,QVector<MatchResult> res){
+    m_batchList[index].result = res;
+    m_batchList[index].isTested = true;
+
+    // 更新表格对应行
+    bool ret = false;
+    for(int i = 0;i < res.size(); ++i){
+        if(res[i].found == true){
+            ret = true;
+        }
+    }
+    ui->tableWidget->item(index, 1)->setText(ret ? QString::number(res[0].score,'f',2) : "NG");
+    ui->tableWidget->item(index, 1)->setBackground(ret ? Qt::green : Qt::red);
+    ui->tableWidget->item(index,2)->setText(QString::number(res.size()));
+    //handleBatchResult(ui->tableWidget->item(index,1));
+}
+
+
+//隐藏ROI
+void MainWindow::setRoisVisible(bool visible){
+    QList<QGraphicsItem*> allItems = m_scene->items();
+    for(auto& item : allItems){
+        // 只有 ROI 项受影响，图片项（m_imgItem）和结果项（m_resultItem）不受影响
+        if(auto roi = dynamic_cast<AbstractRoiItem*>(item))
+            roi->setVisible(visible);
+    }
+}
+
 
 //点击按钮,获取制作模板的图片
 void MainWindow::handleImageLoad()
 {
     // 按钮点击：只负责打开对话框，获取路径
-    QString path = QFileDialog::getOpenFileName(this, "选择模板图片文件", "", "所有图片(*.png *.bmp *.jpg)");
+    QString path = QFileDialog::getOpenFileName(this, "选择模板图片文件",
+                        m_lastOpenPath, "所有图片(*.png *.bmp *.jpg)");
     if (!path.isEmpty()) {
         m_ImgPath = path;
         this->loadImage(m_ImgPath); // 统一调用
 
         ui->Img_lineEdit->setText(path);
+
+        m_lastOpenPath = QFileInfo(path).absolutePath();//获取文件目录部分
     }
 }
 
@@ -404,8 +795,54 @@ void MainWindow::triggerUpdate(){
     }
 }
 
+
+void MainWindow::updateUIparams(){
+    // 暂时阻塞所有控件信号，防止加载时触发 triggerUpdate
+    // 因为 initParamConnections 已经建立了连接
+    const QList<QWidget*> allWidgets = this->findChildren<QWidget*>();
+    for(auto *w : allWidgets) w->blockSignals(true);
+
+    ui->spinContrastLow->setValue(m_currentParams.contrastLow);
+    ui->spinContrastHigh->setValue(m_currentParams.contrastHigh);
+    ui->spinComponentSizeMin->setValue(m_currentParams.minComponentSize);
+    ui->spinPyramidLevel->setValue(m_currentParams.pyramidLevel);
+
+    ui->doubleSpinBox_AngleStart->setValue(m_currentParams.angleStart);
+    ui->doubleSpinBox_AngleExtent->setValue(m_currentParams.angleExtent);
+    ui->doubleSpinBox_RowMinScale->setValue(m_currentParams.scaleRMin);
+    ui->doubleSpinBox_RowMaxScale->setValue(m_currentParams.scaleRMax);
+    ui->doubleSpinBox_ColMinScale->setValue(m_currentParams.scaleCMin);
+    ui->doubleSpinBox_ColMaxScale->setValue(m_currentParams.scaleCMax);
+
+    ui->doubleSpinBoxMinMatchScore->setValue(m_currentParams.minScore);
+    ui->spinBoxMaxMatchNum->setValue(m_currentParams.matchNum);
+
+
+    ui->sliderContrastLow->setValue(m_currentParams.contrastLow);
+    ui->sliderContrastHigh->setValue(m_currentParams.contrastHigh);
+    ui->sliderComponentSizeMin->setValue(m_currentParams.minComponentSize);
+    ui->sliderPyramidLevel->setValue(m_currentParams.pyramidLevel);
+
+    ui->sliderAngleStart->setValue(m_currentParams.angleStart);
+    ui->sliderAngleExtent->setValue(m_currentParams.angleExtent);
+    ui->sliderMinScalingRow->setValue(m_currentParams.scaleRMin*100);
+    ui->sliderMaxScalingRow->setValue(m_currentParams.scaleRMax*100);
+    ui->sliderMinScalingColumn->setValue(m_currentParams.scaleCMin*100);
+    ui->sliderMaxScalingColumn->setValue(m_currentParams.scaleCMax*100);
+
+    ui->sliderMinMatchScore->setValue(m_currentParams.minScore*100);
+    ui->sliderMaxMatchNum->setValue(m_currentParams.matchNum);
+
+    ui->lineEdit_W->setText(QString::number(m_cutImgWidth,'f',2));
+    ui->lineEdit_H->setText(QString::number(m_cutImgHeight,'f',2));
+
+
+    for(auto *w : allWidgets) w->blockSignals(false);
+}
+
 // 获取当前控件参数
 void MainWindow::GetCurrentParams(){
+
     m_currentParams.scaleRMin = ui->doubleSpinBox_RowMinScale->value();
     m_currentParams.scaleRMax = ui->doubleSpinBox_RowMaxScale->value();
     m_currentParams.scaleCMin = ui->doubleSpinBox_ColMinScale->value();
@@ -419,8 +856,11 @@ void MainWindow::GetCurrentParams(){
     m_currentParams.angleStart = ui->doubleSpinBox_AngleStart->value();
     m_currentParams.angleExtent = ui->doubleSpinBox_AngleExtent->value();
 
-    // m_currentParams.minScore = ui->doubleSpinBoxMinMatchScore->value();
-    // m_currentParams.matchNum = ui->spinBoxMaxMatchNum->value();
+    m_currentParams.minScore = ui->doubleSpinBoxMinMatchScore->value();
+    m_currentParams.matchNum = ui->spinBoxMaxMatchNum->value();
+
+    m_cutImgWidth = ui->lineEdit_W->text().toDouble();
+    m_cutImgHeight = ui->lineEdit_H->text().toDouble();
 
     qDebug() << "contrastLow=" << m_currentParams.contrastLow << " contrastHigh=" << m_currentParams.contrastHigh
              << " minComponentSize=" << m_currentParams.minComponentSize << " pyramidLevel=" << m_currentParams.pyramidLevel;
@@ -444,7 +884,7 @@ HalconCpp::HRegion MainWindow::generateFinalRegion() {
     QList<QGraphicsItem*> allItems = m_scene->items();
 
     // --- 第一阶段：收集（不分先后顺序） ---
-    for (auto item : allItems) {
+    for (auto& item : allItems) {
         auto roi = dynamic_cast<AbstractRoiItem*>(item);
         if (!roi) continue;
 
@@ -495,12 +935,14 @@ HalconCpp::HRegion MainWindow::generateFinalRegion() {
 //选择当前文件夹下的所有图片 2. 加载多张图到表格
 void MainWindow::onSelectFiles(){
     // 1. 让用户选择文件夹
-    QStringList files = QFileDialog::getOpenFileNames(this,"选择一个或多个文件","D:/","Images(*jpg *.png *.bmp)");// 默认起始路径
+    QStringList files = QFileDialog::getOpenFileNames(this,"选择一个或多个文件",m_BatchFloderPath,"Images(*jpg *.png *.bmp)");// 默认起始路径
     if (files.isEmpty()) return;
+    m_BatchFloderPath = GetFileDirectory(files[0]);
 
     QTableWidget* table = ui->tableWidget;
 
     // 2. 遍历文件夹获取图片文件
+    table->setUpdatesEnabled(false);//先别刷新UI，遍历完之后进行统一刷新
 
     for(auto& pt : files){
         BatchData data;
@@ -580,8 +1022,10 @@ void MainWindow::onButtonClicked_DetectAllImages(){
         // --- 改进 1：重置内存数据状态 ---
         m_batchList[i].isTested = false;
         // 关键：清空旧的 Halcon 轮廓对象，释放引用计数
-        m_batchList[i].result.modelContours.Clear();
-        m_batchList[i].result.found = false;
+        for(auto& p : m_batchList[i].result) {
+            p.modelContours.Clear();
+            p.found = false;
+        }
 
         // --- 改进 2：UI 性能优化 (复用 Item 而非 new) ---
         QTableWidgetItem *statusItem = ui->tableWidget->item(i, 1);
@@ -603,7 +1047,7 @@ void MainWindow::onButtonClicked_DetectAllImages(){
 }
 
 
-// 接收 Worker 回传的单张图匹配结果
+// 接收 Worker 回传的单张图匹配结果  目前没用到，不用管
 void MainWindow::handleBatchResult(QTableWidgetItem *item) {
     // 1. 更新内存数据
     int row = item->row();
@@ -613,16 +1057,61 @@ void MainWindow::handleBatchResult(QTableWidgetItem *item) {
     loadImage(m_batchList[row].filePath);
 
     // B. 直接从缓存显示结果（零延迟）
-    if (m_batchList[row].isTested && m_batchList[row].result.found) {
-        m_resultItem->setResult(m_batchList[row].result);
-        m_resultItem->setVisible(true);
-    } else {
-        m_resultItem->setVisible(false);
+    for(auto& p : m_batchList[row].result)
+    {
+        if (m_batchList[row].isTested && p.found) {
+            m_resultItem->setResult(p,true);
+            m_resultItem->setVisible(true);
+        } else {
+            m_resultItem->setVisible(false);
+        }
     }
 }
 
 void MainWindow::printThreadLogInfo(QString Text){
     qDebug() << Text;
+}
+
+//输出模板匹配文件
+void MainWindow::on_pushbutton_OutModelFile(){
+
+    QString shmPath = m_curExePath + "/" + QDateTime::currentDateTime().toString("yyyyMMdd_") + "template_match.shm";
+
+    QString modelPath = QFileDialog::getSaveFileName(this,"导出模板",shmPath,"Halcon Model(*.shm)");
+    if(modelPath.isEmpty()) return;
+
+    if(!modelPath.endsWith(".shm")) modelPath += ".shm";
+
+    emit requestSaveModel(modelPath);
+
+    // 2. 保存参数配置文件 (给 你的业务逻辑/另一个软件 用)
+    // 建议存为同名但后缀不同的 .ini
+    QString configureName = modelPath.section('.',0,0) + ".ini";
+    QSettings ini(configureName,QSettings::IniFormat);
+
+    ini.beginGroup("MatchParams");
+    // --- 建模参考参数 (用于追溯或另一个软件重新学习时使用) ---
+    ini.setValue("ContrastLow",m_currentParams.contrastLow);
+    ini.setValue("ContrastHigh",m_currentParams.contrastHigh);
+    ini.setValue("MinComponentSize",m_currentParams.minComponentSize);
+    ini.setValue("PyramidLevel",m_currentParams.pyramidLevel);
+    ini.setValue("Metric", "use_polarity");                // 极性 (保持一致，否则黑白反转找不着)
+
+    // --- 查找必备参数 (FindAnisoShapeModel 算子必须填写的) ---
+    ini.setValue("AngleStart",m_currentParams.angleStart);
+    ini.setValue("AngleExtent",m_currentParams.angleExtent);
+    ini.setValue("ScaleRMin",m_currentParams.scaleRMin);
+    ini.setValue("ScaleRMax",m_currentParams.scaleRMax);
+    ini.setValue("ScaleCMin",m_currentParams.scaleCMin);
+    ini.setValue("ScaleCMax",m_currentParams.scaleCMax);
+    ini.setValue("MinScore",m_currentParams.minScore);
+
+    // --- 缺少的核心执行参数 (决定性能和精度) ---
+    ini.setValue("MaxMatchNum",m_currentParams.matchNum);   // 找几个？(1还是多个)
+    ini.setValue("MaxOverlap", 0.5);                       // 最大重叠度 (防止一个目标找出来两个重叠的框)
+    ini.setValue("SubPixel", "least_squares");             // 亚像素精度模式 (工业通常用这个)
+    ini.setValue("Greediness", 0.9);                       // 贪婪度 (0.9速度快, 0.7更鲁棒)
+    ini.endGroup();
 }
 
 
@@ -655,19 +1144,63 @@ void MainWindow::resizeEvent(QResizeEvent* event){
 //=================== PushButton ===================
 void MainWindow::contrastLHAutoSelect(){
     try{
+        if(m_ImgPath.isEmpty()) return;
+
         HImage img(m_ImgPath.toLocal8Bit().data());
         HRegion roi = generateFinalRegion();
 
         HTuple hv_ParamName, hv_ParamValue;
 
         // 执行自动确定算子
-        DetermineShapeModelParams(img.ReduceDomain(roi), "auto", 0, 360.0*M_PI/180.0,
-                                  0.9, 1.1, "auto", "use_polarity", "auto", "auto", "all",
+        DetermineShapeModelParams(img.ReduceDomain(roi),
+                                  "auto", 0, 360.0*M_PI/180.0,
+                                  0.5, 2,// 建议使用你 UI 上的缩放范围
+                                  "auto",
+                                  "use_polarity",
+                                  "auto",// 自动对比度
+                                  "auto", // 自动最小组件
+                                  "all",
                                   &hv_ParamName, &hv_ParamValue);
 
+
+        int low = 30;  // 默认值
+        int high = 60; // 默认值
+
+        for(int i = 0; i < hv_ParamName.Length(); ++i){
+            QString paramName = QString::fromStdString(hv_ParamName[i].S().Text());
+            if(paramName == "contrast"){
+                HTuple val = hv_ParamValue.TupleSelect(i);
+                if(val.Length() == 1){
+                    low = val[0].I();
+                    high = low+20;// 如果只返回一个，人为给高阈值留间距
+                }
+                else if(val.Length() > 2){
+                    low = val[0].I();
+                    high = val[1].I();
+                }
+            }
+            else if(paramName == "min_size"){
+                int minSize = hv_ParamValue.TupleSelect(i);
+                ui->spinComponentSizeMin->setValue(minSize);
+            }
+        }
+
+        ui->sliderContrastLow->blockSignals(true);
+        ui->sliderContrastHigh->blockSignals(true);
         // 更新 UI 控件，控件会自动触发 triggerUpdate
-        ui->sliderContrastLow->setValue(hv_ParamValue[0].I());
-        ui->sliderContrastHigh->setValue(hv_ParamValue[1].I());
+        ui->sliderContrastLow->setValue(low);
+        ui->spinContrastLow->setValue(low);
+        ui->spinContrastHigh->setValue(high);
+        ui->sliderContrastHigh->setValue(high);
+
+        ui->sliderContrastLow->blockSignals(false);
+        ui->sliderContrastHigh->blockSignals(false);
+
+        m_currentParams.contrastLow = low;
+        m_currentParams.contrastHigh = high;
+        triggerUpdate();
+        qDebug() << "自动选择完成: Low=" << low << " High=" << high;
+
     }catch(HException& e){
         qDebug() << "自动选择对比度失败：" << e.ErrorMessage();
     }
@@ -685,4 +1218,93 @@ void MainWindow::loadStyleSheet(){
     }
 }
 
+
+//获取文件目录
+QString MainWindow::GetFileDirectory(QString& filePath){
+    int pox = filePath.lastIndexOf("/");
+    return filePath.left(pox+1);
+}
+
+//仿射裁剪
+void MainWindow::AffineCutting(HImage& srcImg, const QString& filePath,const MatchResult& result,const double& width,const double& height){
+    try{
+        double tmp_height = height, tmp_width = width;
+        qDebug() << "width:" << tmp_width
+                 << "height:" << tmp_height;
+
+        HHomMat2D homMat;
+        homMat.HomMat2dInvert();
+
+        homMat = homMat.HomMat2dRotate(-result.angle + 0.015,result.row,result.col);
+        homMat = homMat.HomMat2dTranslate(tmp_height/2 - result.row,tmp_width/2 - result.col);
+
+        // 3. 裁剪
+        HImage rectfiedImg = srcImg.AffineTransImageSize(homMat,"bilinear",tmp_width, tmp_height);
+        if(!rectfiedImg.IsInitialized()){
+            qDebug() << "裁剪结果为空";
+            return;
+        }
+
+        QByteArray path = QFile::encodeName(filePath);
+        rectfiedImg.WriteImage("jpg",0,path.constData());
+    }
+    catch(HalconCpp::HException &except){
+        // 这是最关键的：它会告诉你哪个算子报错，错误代码是多少
+        QString Identify = except.ProcName().Text(); // 报错的算子名
+        QString ErrorMsg = except.ErrorMessage().Text(); // 报错的具体原因
+        int ErrorCode = except.ErrorCode(); // 错误代码
+
+        qDebug() << "Halcon Error in" << Identify
+                 << ":" << ErrorMsg
+                 << "(Code:" << ErrorCode << ")";
+    }
+}
+
+//保存所有裁剪后的图片
+void MainWindow::on_pushButton_saveAll_clicked()
+{
+    if(m_batchList.isEmpty() || m_BatchFloderPath.isEmpty()) return;
+
+    GetCurrentParams();
+
+    QString Dir = QDir(m_BatchFloderPath).filePath("Cut/");//裁剪图片存放路径
+    //判断路径是否存在，不存在则创建
+    QDir dir;
+    if(!dir.exists(Dir)){
+        if(!dir.mkpath(Dir)){
+            qDebug() << "目录创建失败";
+        }
+    }
+
+
+    for(auto& matchData : m_batchList){
+        for(auto& p : matchData.result){
+            if(p.found){
+                HImage img(matchData.filePath.toLocal8Bit().data());
+                //1.普通裁剪
+                // HRegion cropRegion;
+                // double l1 = 600.0, l2 = 370.0;
+                // cropRegion.GenRectangle2(matchData.result.row,matchData.result.col,matchData.result.angle,l1,l2);
+                // HImage cropped = img.ReduceDomain(cropRegion).CropDomain();
+
+                QString fileName = QFileInfo(matchData.filePath).fileName();
+                fileName = Dir + fileName;
+                //QString format = fileName.right(fileName.size() - fileName.indexOf(".")-1);
+                // cropped.WriteImage(format.toLocal8Bit(),0,fileName.toLocal8Bit());
+
+                //2.仿射裁剪，
+                AffineCutting(img,fileName,p,m_cutImgWidth,m_cutImgHeight);
+            }
+        }
+    }
+    QMessageBox::information(this,"裁剪图片","所有裁剪图片保存完毕");
+}
+
+
+
+
+void MainWindow::on_pushButton_2_clicked()
+{
+    saveParamersToIni();
+}
 

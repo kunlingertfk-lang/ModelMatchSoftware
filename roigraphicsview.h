@@ -34,7 +34,7 @@ private:
     bool m_isPositive = true;
 
     // 当前正在创建或正在编辑且未确认的那个 ROI
-    QPointer<AbstractRoiItem> m_editingItem;
+    QPointer<AbstractRoiItem> m_editingItem;//QPointer智能指针
 
 
 };

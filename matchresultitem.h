@@ -14,7 +14,9 @@ public:
     MatchResultItem(QGraphicsItem* parent = nullptr);
 
     // 更新位置和角度（由 Halcon 返回的结果驱动）
-    void setResult(const MatchResult& res);
+    void setResult(const MatchResult& res,bool flag);
+
+    void MatchResultItem::setResult(const QVector<MatchResult>& resList,bool flag);
 
     // 定义这个项占据的范围
     QRectF boundingRect() const override;
@@ -26,17 +28,22 @@ public:
 
     void setLabel(const QString& text);
 
+    void clearContour();
+
 private:
     QPainterPath convertXldToPath(const HalconCpp::HObject& xld);
 
 private:
     double m_score;
-
     QString m_label;
-
     QPointF m_foundPos;
 
     QPainterPath m_contourPath;
+
+    bool m_flag = false;//false:单个 true:多个
+
+    QVector<MatchResult> m_resList;
+    QVector<QPainterPath> m_allPaths;
 };
 
 #endif // MATCHRESULTITEM_H

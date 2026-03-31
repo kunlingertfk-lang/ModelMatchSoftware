@@ -6,6 +6,8 @@
 
 #include "AbstractRoiItem.h"
 #include "rotrectroiitem.h"
+#include "circleroiitem.h"
+#include "rect1roiitem.h"
 
 RoiGraphicsView::RoiGraphicsView(QWidget* parent)
     : QGraphicsView(parent)
@@ -28,7 +30,7 @@ void RoiGraphicsView::mousePressEvent(QMouseEvent* event) {
     // 调试打印：看看你点的这个像素坐标是多少
     // qDebug() << "鼠标点击位置 (场景坐标):" << scenePos;
 
-    static int a = 0;
+    // static int a = 0;
     // --- 逻辑 1: 正在编辑中的 ROI 处理 ---
     if (m_editingItem) {
         if (event->button() == Qt::RightButton) {
@@ -42,7 +44,6 @@ void RoiGraphicsView::mousePressEvent(QMouseEvent* event) {
 
             // 发射信号通知 UI（如果有的话）
             emit itemFinished();
-
             event->accept();
             return;
         }
@@ -52,7 +53,7 @@ void RoiGraphicsView::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
-    // --- 逻辑 2: 创建新的 ROI ---
+    /*// --- 逻辑 2: 创建新的 ROI ---
     if (m_mode == RoiMode::DrawRotRect && event->button() == Qt::LeftButton) {
         auto* roi = new RotRectRoiItem(QRectF(scenePos, QSize(0, 0)));
 
@@ -81,7 +82,61 @@ void RoiGraphicsView::mousePressEvent(QMouseEvent* event) {
     }
     else {
         QGraphicsView::mousePressEvent(event);
+    }*/
+
+    //工厂模式
+    if(m_mode != RoiMode::None && event->button() == Qt::LeftButton){
+        AbstractRoiItem* roi = nullptr;
+        QRectF initRect(scenePos,QSize(0,0));//初始位置
+
+        //根据当前模式创建对应的派生类实例
+        QString tmp;
+        switch(m_mode){
+        case RoiMode::DrawRotRect:
+            roi = new RotRectRoiItem(initRect); tmp = "DrawRotRect";
+            break;
+        case RoiMode::DrawRect:
+            roi = new Rect1RoiItem(initRect); tmp = "DrawRect";
+            break;
+        case RoiMode::DrawCircle:
+            roi = new CircleRoiItem(initRect); tmp = "DrawCircle";
+            break;
+        case RoiMode::DrawEllipse:
+            //roi = new Rect1RoiItem(initRect); tmp = "DrawEllipse";
+            break;
+        default:
+            break;
+        }
+
+        if(roi){
+            // 设置正负属性
+            roi->setOperation(m_isPositive ? AbstractRoiItem::RoiOperation::Add
+                                           : AbstractRoiItem::RoiOperation::Subtract);
+
+            // 调试输出
+            qDebug() << "Created ROI type:[" << (int)m_mode << "]" << tmp
+                     << " Operation:" << (m_isPositive ? "Add" : "Subtract");
+
+            scene()->addItem(roi);
+            m_editingItem = roi;
+            m_editingItem->setSelected(true);
+
+            // 核心：强制进入 Scale 手柄状态，这样 mouseMove 会立即驱动子类的 applyScale
+            m_editingItem->setActiveHandle(AbstractRoiItem::HandleType::Scale);
+            m_editingItem->setLastScenePos(scenePos);
+
+            setCursor(Qt::CrossCursor);
+            event->accept();
+
+            // 发射信号给 MainWindow 绑定 roiMoved 等
+            emit roiAdded(roi);
+        }
+        else{
+            // 普通点击（选择已存在的 ROI 等）
+            QGraphicsView::mousePressEvent(event);
+        }
     }
+    QGraphicsView::mousePressEvent(event);
 }
 
 void RoiGraphicsView::mouseMoveEvent(QMouseEvent* event) {

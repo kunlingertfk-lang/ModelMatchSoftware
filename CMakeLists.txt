@@ -53,6 +53,8 @@ add_executable(ModelShapeMatch
     halconworker.h halconworker.cpp
     MatchResult.h
     resource/qss.qrc
+    circleroiitem.h circleroiitem.cpp
+    rect1roiitem.h rect1roiitem.cpp
 )
 
 include_directories(

@@ -5,6 +5,8 @@
 #include <HalconCpp.h>
 #include "MatchResult.h"
 
+#include <QVector>
+
 using namespace HalconCpp;
 
 
@@ -42,10 +44,6 @@ public slots:
      */
     void matchBatch(const QStringList& imgPaths, const MatchParams& p);
 
-
-
-
-
     //  1：学习模板（只在点击“创建”或“学习”时调用一次）
     //void process(const QString& imgPath, const HalconCpp::HObject& hRegion,const MatchParams& p); // 核心处理函数
 
@@ -57,6 +55,9 @@ public slots:
      */
     void clearCurrentModel();
 
+
+    void saveModel(const QString& filePath);
+
 signals:
 
     // 训练成功后发射，包含原始模型轮廓 (用于 UI 预览)
@@ -66,7 +67,7 @@ signals:
     void resultReady(MatchResult res);
 
     // 批量匹配中，每算完一张发射一次，带索引 index 方便 UI 对应表格行
-    void batchRowReady(int index, MatchResult res);
+    void batchRowReady(int index, QVector<MatchResult> res);
 
     // 整个队列处理完毕
     void batchFinished();
