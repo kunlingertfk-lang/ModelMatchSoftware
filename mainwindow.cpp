@@ -1276,7 +1276,6 @@ void MainWindow::on_pushButton_saveAll_clicked()
         }
     }
 
-
     for(auto& matchData : m_batchList){
         for(auto& p : matchData.result){
             if(p.found){
