@@ -649,6 +649,7 @@ void MainWindow::loadParamersFromIni(){
     setting.beginGroup("CutParamers");
     m_cutImgWidth = setting.value("CutImgWidth","0.0").toDouble();
     m_cutImgHeight = setting.value("CutImgHeight","0.0").toDouble();
+    m_cutRotAngle = setting.value("CutImgRotAngle","0.00").toDouble();
     m_pairCount = setting.value("PairCount","0").toInt();
     setting.endGroup();
 
@@ -687,6 +688,7 @@ void MainWindow::saveParamersToIni(){
     setting.setValue("PairCount",m_pairCount);
     setting.setValue("CutImgWidth",m_cutImgWidth);
     setting.setValue("CutImgHeight",m_cutImgHeight);
+    setting.setValue("CutImgRotAngle",m_cutRotAngle);
     setting.endGroup();
 
     qDebug() << "参数已保存到ini中";
@@ -835,7 +837,7 @@ void MainWindow::updateUIparams(){
 
     ui->lineEdit_W->setText(QString::number(m_cutImgWidth,'f',2));
     ui->lineEdit_H->setText(QString::number(m_cutImgHeight,'f',2));
-
+    ui->lineEdit_Angle->setText(QString::number(m_cutRotAngle,'f',3));
 
     for(auto *w : allWidgets) w->blockSignals(false);
 }
@@ -861,6 +863,7 @@ void MainWindow::GetCurrentParams(){
 
     m_cutImgWidth = ui->lineEdit_W->text().toDouble();
     m_cutImgHeight = ui->lineEdit_H->text().toDouble();
+    m_cutRotAngle = ui->lineEdit_Angle->text().toDouble();
 
     qDebug() << "contrastLow=" << m_currentParams.contrastLow << " contrastHigh=" << m_currentParams.contrastHigh
              << " minComponentSize=" << m_currentParams.minComponentSize << " pyramidLevel=" << m_currentParams.pyramidLevel;
@@ -1226,16 +1229,17 @@ QString MainWindow::GetFileDirectory(QString& filePath){
 }
 
 //仿射裁剪
-void MainWindow::AffineCutting(HImage& srcImg, const QString& filePath,const MatchResult& result,const double& width,const double& height){
+void MainWindow::AffineCutting(HImage& srcImg, const QString& filePath,const MatchResult& result,
+                               const double& width,const double& height,const double& angle){
     try{
-        double tmp_height = height, tmp_width = width;
+        double tmp_height = height, tmp_width = width, tmp_angle = angle;
         qDebug() << "width:" << tmp_width
                  << "height:" << tmp_height;
 
         HHomMat2D homMat;
         homMat.HomMat2dInvert();
 
-        homMat = homMat.HomMat2dRotate(-result.angle + 0.015,result.row,result.col);
+        homMat = homMat.HomMat2dRotate(-result.angle + tmp_angle,result.row,result.col);
         homMat = homMat.HomMat2dTranslate(tmp_height/2 - result.row,tmp_width/2 - result.col);
 
         // 3. 裁剪
@@ -1303,7 +1307,7 @@ void MainWindow::on_pushButton_saveAll_clicked()
                 // cropped.WriteImage(format.toLocal8Bit(),0,fileName.toLocal8Bit());
 
                 //2.仿射裁剪，
-                AffineCutting(img,fileName,p,m_cutImgWidth,m_cutImgHeight);
+                AffineCutting(img,fileName,p,m_cutImgWidth,m_cutImgHeight,m_cutRotAngle);
             }
         }
     }

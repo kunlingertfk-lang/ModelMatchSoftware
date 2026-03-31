@@ -12,5 +12,8 @@
         <file>images/ic_roi_op_intersection.png</file>
         <file>images/ic_roi_op_union.png</file>
         <file>images/ic_roi_op_xor.png</file>
+        <file>images/ty26.jpg</file>
+        <file>images/ty36.jpg</file>
+        <file>images/ty37.png</file>
     </qresource>
 </RCC>

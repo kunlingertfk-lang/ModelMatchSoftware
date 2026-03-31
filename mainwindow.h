@@ -134,6 +134,7 @@ private://内部控件私有变量
 
     double m_cutImgWidth;//裁剪图片的宽高
     double m_cutImgHeight;
+    double m_cutRotAngle;//旋转角度
     int m_pairCount;
 
 private://自带库私有变量
@@ -196,7 +197,8 @@ public:
     void saveParamersToIni();
 
     QString GetFileDirectory(QString& filePath);  //获取文件目录
-    void AffineCutting(HalconCpp::HImage& srcImg, const QString& filePath,const MatchResult& result,const double& width,const double& height);//仿射裁剪
+    void AffineCutting(HalconCpp::HImage& srcImg, const QString& filePath,const MatchResult& result,
+                       const double& width,const double& height,const double& angle);//仿射裁剪
 
 private:
     Ui::MainWindow *ui;
