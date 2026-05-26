@@ -1,4 +1,4 @@
-#include "roitoolbar.h"
+﻿#include "roitoolbar.h"
 
 #include <QHBoxLayout>
 #include <QStyle>
@@ -36,7 +36,7 @@ void RoiToolbar::setupUi()
     btnSub->setToolTip("剔除区域(Subtract)");
 
     m_opGroup->addButton(btnAdd, 0); // ID 0 代表 Positive
-    m_opGroup->addButton(btnSub, 1);// ID 1 代表 Negative
+    m_opGroup->addButton(btnSub, 1); // ID 1 代表 Negative
 
     // 2. 形状按钮组 (图标 3, 4, 5, 6, 7)
     m_shapeGroup = new QButtonGroup(this);

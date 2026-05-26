@@ -1,4 +1,4 @@
-#include "mainwindow.h"
+﻿#include "mainwindow.h"
 #include "ui_mainwindow.h"
 
 #include <HalconCpp.h>
@@ -47,6 +47,21 @@ MainWindow::MainWindow(QWidget *parent)
 
     loadStyleSheet();
     qRegisterMetaType<QVector<MatchResult>>("QVector<MatchResult>");
+
+/*===========================================================================*/
+    /*设置控件初始值*/
+    ui->comboBox_MacthFactor->addItem("CreateShapeModel",0);
+    ui->comboBox_MacthFactor->addItem("CreateScaledShapeModel",1);
+    ui->comboBox_MacthFactor->addItem("CreateAnisonShapeModel",2);
+    ui->comboBox_MacthFactor->setCurrentIndex(0);
+    QFont font = ui->comboBox_MacthFactor->font();
+    QFontMetrics fm(font);
+
+    int w = fm.horizontalAdvance("CreateAnisonShapeModel");  // 获取文本宽高
+    int h = fm.height();
+    ui->comboBox_MacthFactor->setMinimumSize(w + 30, h + 10);
+
+ /*===========================================================================*/
 
     ui->splitter->setStretchFactor(0,7);
     ui->splitter->setStretchFactor(1,3);
@@ -168,6 +183,9 @@ void MainWindow::initAlgorithmThread(){
     m_workerThread = new QThread(this);
     m_worker = new HalconWorker();
     m_worker->moveToThread(m_workerThread);
+
+    //先设置MatchFactor
+    connect(this,&MainWindow::requestMatchFactor,m_worker,&HalconWorker::setMatchFactor);
 
     // 连接：主线程请求 -> 子线程执行
     connect(this,&MainWindow::requestTrain,m_worker,&HalconWorker::trainModel);
@@ -433,6 +451,16 @@ void MainWindow::initConnections(){
     connect(ui->pushButton_OutModelFile,&QPushButton::clicked,this,&MainWindow::on_pushbutton_OutModelFile);
 
     connect(this, &MainWindow::requestSaveModel,m_worker,&HalconWorker::saveModel);
+
+    //选择匹配因子
+    connect(ui->comboBox_MacthFactor,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[&](int){
+        m_MatchFactor = ui->comboBox_MacthFactor->currentData().toInt();
+        if(m_MatchFactor == 1) ui->checkLockScale->setChecked(true);
+        else ui->checkLockScale->setChecked(false);
+        emit requestMatchFactor(m_MatchFactor);
+        triggerUpdate();//需要重新创建模板
+    });
+    connect(ui->comboBox_MacthFactor,QOverload<int>::of(&QComboBox::currentIndexChanged),this,&MainWindow::changedMatchFactorParames);
 }
 
 // connect table和clicked
@@ -660,6 +688,10 @@ void MainWindow::saveParamersToIni(){
     //创建打开ini文件
     QSettings setting(m_configIni,QSettings::IniFormat);
 
+    setting.beginGroup("MatchFactor");
+    setting.setValue("FactorType",m_currentParams.FactorType);
+    setting.endGroup();
+
     setting.beginGroup("MatchParams");
     //整形参数
     setting.setValue("ContrastLow",m_currentParams.contrastLow);
@@ -693,6 +725,38 @@ void MainWindow::saveParamersToIni(){
 
     qDebug() << "参数已保存到ini中";
 }
+
+void MainWindow::changedMatchFactorParames(int index){
+    m_currentParams.FactorType = index;
+    m_currentParams.contrastLow = ui->spinContrastLow->value();
+    m_currentParams.contrastHigh = ui->spinContrastHigh->value();
+    m_currentParams.minComponentSize = ui->spinComponentSizeMin->value();
+    m_currentParams.pyramidLevel = ui->spinPyramidLevel->value();
+    m_currentParams.angleStart = ui->doubleSpinBox_AngleStart->value();
+    m_currentParams.angleExtent = ui->doubleSpinBox_AngleExtent->value();
+    m_currentParams.minScore = ui->doubleSpinBoxMinMatchScore->value();
+    m_currentParams.matchNum = ui->spinBoxMaxMatchNum->value();
+
+    if(index == 0){
+        m_currentParams.scaleRMin = 1.0;
+        m_currentParams.scaleRMax = 1.0;
+        m_currentParams.scaleCMin = 1.0;
+        m_currentParams.scaleCMax = 1.0;
+    }
+    else if(index == 1){
+        m_currentParams.scaleRMin = ui->doubleSpinBox_RowMinScale->value();
+        m_currentParams.scaleRMax = ui->doubleSpinBox_RowMaxScale->value();
+        m_currentParams.scaleCMin = m_currentParams.scaleRMin;
+        m_currentParams.scaleCMax = m_currentParams.scaleRMax;
+    }
+    else if(index == 2){
+        m_currentParams.scaleRMin = ui->doubleSpinBox_RowMinScale->value();
+        m_currentParams.scaleRMax = ui->doubleSpinBox_RowMaxScale->value();
+        m_currentParams.scaleCMin = ui->doubleSpinBox_ColMinScale->value();
+        m_currentParams.scaleCMax = ui->doubleSpinBox_ColMaxScale->value();
+    }
+}
+
 
 //======================================================
 // ====================== 业务逻辑 ======================
@@ -1087,10 +1151,16 @@ void MainWindow::on_pushbutton_OutModelFile(){
 
     emit requestSaveModel(modelPath);
 
+    changedMatchFactorParames(m_MatchFactor);
+
     // 2. 保存参数配置文件 (给 你的业务逻辑/另一个软件 用)
     // 建议存为同名但后缀不同的 .ini
     QString configureName = modelPath.section('.',0,0) + ".ini";
     QSettings ini(configureName,QSettings::IniFormat);
+
+    ini.beginGroup("MatchFactor");
+    ini.setValue("FactorType",m_currentParams.FactorType);
+    ini.endGroup();
 
     ini.beginGroup("MatchParams");
     // --- 建模参考参数 (用于追溯或另一个软件重新学习时使用) ---
@@ -1114,6 +1184,12 @@ void MainWindow::on_pushbutton_OutModelFile(){
     ini.setValue("MaxOverlap", 0.5);                       // 最大重叠度 (防止一个目标找出来两个重叠的框)
     ini.setValue("SubPixel", "least_squares");             // 亚像素精度模式 (工业通常用这个)
     ini.setValue("Greediness", 0.9);                       // 贪婪度 (0.9速度快, 0.7更鲁棒)
+    ini.endGroup();
+
+    ini.beginGroup("CutParamers");
+    ini.setValue("CutImgWidth",m_cutImgWidth);
+    ini.setValue("CutImgHeight",m_cutImgHeight);
+    ini.setValue("CutImgRotAngle",m_cutRotAngle);
     ini.endGroup();
 }
 

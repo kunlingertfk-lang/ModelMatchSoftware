@@ -1,4 +1,4 @@
-#ifndef MAINWINDOW_H
+﻿#ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
 #include <QMainWindow>
@@ -123,6 +123,7 @@ private://内部控件私有变量
 
     MatchResultItem* m_resultItem = nullptr;
 
+    int m_MatchFactor = 0;//默认使用CreteShapeModel(0)
 
     QThread* m_workerThread;
     HalconWorker* m_worker;
@@ -147,7 +148,7 @@ private://自定义私有变量
     QString m_lastOpenPath;
     QString m_BatchFloderPath;//批量图片文件夹路径
 
-    QVector<IntBinding> m_intBindings;
+    QVector<IntBinding> m_intBindings;//slider与spinbox绑定
     QVector<DoubleBinding> m_doubleBindings;
 
     QList<TestImage> m_testImages;
@@ -188,6 +189,8 @@ private slots:
     void onTableCellClicked(int row,int col);
     void on_pushButton_2_clicked();
 
+    void changedMatchFactorParames(int index);
+
 public:
     void initPasswordCofigure();
     QString hashPassword(const QString& plainText);
@@ -204,6 +207,8 @@ private:
     Ui::MainWindow *ui;
 
 signals:
+    void requestMatchFactor(const int index);
+
     void requestTrain(const QString& path, const HalconCpp::HObject& region, const MatchParams& params);
 
     void requestBatchMatch(const QStringList& imgPaths,const MatchParams& p);

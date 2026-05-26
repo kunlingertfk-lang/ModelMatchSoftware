@@ -1,4 +1,4 @@
-#ifndef MATCHRESULT_H
+﻿#ifndef MATCHRESULT_H
 #define MATCHRESULT_H
 
 
@@ -14,6 +14,8 @@ struct MatchResult{
 };
 
 struct MatchParams{
+    int FactorType = 0;//使用的匹配因子
+
     //建模参数
     int contrastLow = 35;
     int contrastHigh = 70;

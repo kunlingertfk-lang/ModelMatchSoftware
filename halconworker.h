@@ -1,4 +1,4 @@
-#ifndef HALCONWORKER_H
+﻿#ifndef HALCONWORKER_H
 #define HALCONWORKER_H
 
 #include <QObject>
@@ -22,8 +22,11 @@ public:
 private:
     HTuple m_hvModelID;
 
+    int m_MatchFactor = 0;
 
 public slots:
+
+    void setMatchFactor(int matchFactorIndex);
 
     /**
      * @brief 1. 训练/创建模板
